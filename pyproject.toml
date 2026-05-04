@@ -1,0 +1,20 @@
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "executive_report"
+authors = [
+    { name = "Executive Report App" }
+]
+description = "Executive dashboard and daily performance email summaries for ERPNext."
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://example.com/executive_report"
+
+[tool.frappe]
+app_name = "executive_report"

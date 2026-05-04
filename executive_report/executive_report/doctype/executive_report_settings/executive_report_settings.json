@@ -1,0 +1,79 @@
+{
+  "actions": [],
+  "allow_copy": 0,
+  "allow_rename": 0,
+  "creation": "2026-05-04 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "enabled",
+    "send_time",
+    "last_sent_date",
+    "email_section",
+    "email_subject",
+    "recipients"
+  ],
+  "fields": [
+    {
+      "default": "1",
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enable Daily Summary Email"
+    },
+    {
+      "default": "08:00:00",
+      "description": "Server time when the daily Executive Overview email should be sent.",
+      "fieldname": "send_time",
+      "fieldtype": "Time",
+      "label": "Send Time",
+      "reqd": 1
+    },
+    {
+      "fieldname": "last_sent_date",
+      "fieldtype": "Date",
+      "hidden": 1,
+      "label": "Last Sent Date",
+      "read_only": 1
+    },
+    {
+      "fieldname": "email_section",
+      "fieldtype": "Section Break",
+      "label": "Email Recipients"
+    },
+    {
+      "default": "Daily Executive Performance Summary",
+      "fieldname": "email_subject",
+      "fieldtype": "Data",
+      "label": "Email Subject",
+      "reqd": 1
+    },
+    {
+      "fieldname": "recipients",
+      "fieldtype": "Table",
+      "label": "Recipients",
+      "options": "Executive Report Recipient"
+    }
+  ],
+  "issingle": 1,
+  "links": [],
+  "modified": "2026-05-04 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Executive Report",
+  "name": "Executive Report Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "Executive Report Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}
