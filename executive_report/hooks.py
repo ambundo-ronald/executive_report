@@ -5,7 +5,9 @@ app_description = "Executive dashboard and daily performance summaries for ERPNe
 app_email = "admin@example.com"
 app_license = "MIT"
 
-required_apps = ["frappe", "erpnext"]
+# Keep app discovery/install Frappe-only for Frappe Cloud. ERPNext-specific
+# dashboard sections already check whether the relevant DocTypes exist.
+# required_apps = ["erpnext"]
 
 app_include_css = "/assets/executive_report/css/executive_report.css"
 
