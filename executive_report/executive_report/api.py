@@ -763,6 +763,7 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
     receivable_risks = []
     sales_by_person = []
     outstanding_by_person = []
+    sales_person_summary = {}
     if _doctype_exists("Sales Invoice"):
         sales = _sum(
             """
@@ -875,8 +876,132 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
             """,
             values,
         )
+
+        invoice_summary = _rows(
+            """
+            select
+                st.sales_person as sales_person,
+                sum(coalesce(st.allocated_amount, si.base_net_total * coalesce(st.allocated_percentage, 100) / 100)) as revenue,
+                sum((si.base_grand_total - si.outstanding_amount) * coalesce(st.allocated_percentage, 100) / 100) as collected_amount,
+                sum(
+                    case
+                        when si.outstanding_amount > 0 and si.due_date < %(to_date)s
+                        then si.outstanding_amount * coalesce(st.allocated_percentage, 100) / 100
+                        else 0
+                    end
+                ) as overdue_amount,
+                count(distinct si.name) as invoices
+            from `tabSales Invoice` si
+            inner join `tabSales Team` st
+                on st.parent = si.name and st.parenttype = 'Sales Invoice'
+            where si.docstatus = 1
+              and si.posting_date between %(from_date)s and %(to_date)s
+              and st.sales_person is not null
+              and st.sales_person != ''
+            group by st.sales_person
+            order by revenue desc
+            """,
+            values,
+        )
+        for row in invoice_summary:
+            sales_person_summary[row.sales_person] = {
+                "sales_person": row.sales_person,
+                "revenue": row.revenue,
+                "collected_amount": row.collected_amount,
+                "overdue_amount": row.overdue_amount,
+                "sales_orders": 0,
+                "quotations": 0,
+                "invoices": row.invoices,
+            }
+
+        if _doctype_exists("Sales Order"):
+            order_summary = _rows(
+                """
+                select st.sales_person as sales_person, count(distinct so.name) as sales_orders
+                from `tabSales Order` so
+                inner join `tabSales Team` st
+                    on st.parent = so.name and st.parenttype = 'Sales Order'
+                where so.docstatus < 2
+                  and so.transaction_date between %(from_date)s and %(to_date)s
+                  and st.sales_person is not null
+                  and st.sales_person != ''
+                group by st.sales_person
+                """,
+                values,
+            )
+            for row in order_summary:
+                sales_person_summary.setdefault(
+                    row.sales_person,
+                    {
+                        "sales_person": row.sales_person,
+                        "revenue": 0,
+                        "collected_amount": 0,
+                        "overdue_amount": 0,
+                        "sales_orders": 0,
+                        "quotations": 0,
+                        "invoices": 0,
+                    },
+                )["sales_orders"] = row.sales_orders
+
+        if _doctype_exists("Quotation"):
+            quotation_summary = _rows(
+                """
+                select st.sales_person as sales_person, count(distinct quotation.name) as quotations
+                from `tabQuotation` quotation
+                inner join `tabSales Team` st
+                    on st.parent = quotation.name and st.parenttype = 'Quotation'
+                where quotation.docstatus < 2
+                  and quotation.transaction_date between %(from_date)s and %(to_date)s
+                  and st.sales_person is not null
+                  and st.sales_person != ''
+                group by st.sales_person
+                """,
+                values,
+            )
+            for row in quotation_summary:
+                sales_person_summary.setdefault(
+                    row.sales_person,
+                    {
+                        "sales_person": row.sales_person,
+                        "revenue": 0,
+                        "collected_amount": 0,
+                        "overdue_amount": 0,
+                        "sales_orders": 0,
+                        "quotations": 0,
+                        "invoices": 0,
+                    },
+                )["quotations"] = row.quotations
     elif _doctype_exists("Sales Invoice"):
         notes.append(_("Sales Team is not available, so sales person performance is hidden."))
+
+    new_customers = []
+    if _doctype_exists("Customer"):
+        customer_label = "customer_name" if _has_column("Customer", "customer_name") else "name"
+        contact_fields = [
+            fieldname
+            for fieldname in ("mobile_no", "phone", "primary_mobile_no", "customer_primary_contact")
+            if _has_column("Customer", fieldname)
+        ]
+        contact_expression = (
+            "coalesce("
+            + ", ".join(f"nullif({fieldname}, '')" for fieldname in contact_fields)
+            + ", '')"
+            if contact_fields
+            else "''"
+        )
+        new_customers = _rows(
+            f"""
+            select name,
+                   {customer_label} as customer_name,
+                   {contact_expression} as contact_number,
+                   date(creation) as created_on
+            from `tabCustomer`
+            where date(creation) between %(from_date)s and %(to_date)s
+            order by creation desc
+            limit 10
+            """,
+            values,
+        )
 
     income = 0
     expense = 0
@@ -995,6 +1120,7 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
             _number_card(_("Net Sales"), sales, "Currency", _list_route("Sales Invoice", {"docstatus": 1, **_period_filter("posting_date", from_date, to_date)})),
             _number_card(_("Sales Change"), _change_percent(sales, previous_sales), "Percent"),
             _number_card(_("Sales Invoices"), invoices, "Int", _list_route("Sales Invoice", {"docstatus": 1, **_period_filter("posting_date", from_date, to_date)})),
+            _number_card(_("New Customers"), len(new_customers), "Int", _list_route("Customer", _period_filter("creation", from_date, to_date))),
             _number_card(_("Expense"), expense, "Currency", _report_route("General Ledger", {"from_date": from_date, "to_date": to_date})),
             _number_card(_("Outstanding Sales"), outstanding, "Currency", _report_route("Accounts Receivable", {"report_date": to_date})),
             _number_card(_("Overdue Receivables"), overdue_receivables, "Currency", _report_route("Accounts Receivable", {"report_date": to_date, "range3": 90})),
@@ -1038,6 +1164,42 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
                     _list_route("Sales Invoice", {"docstatus": 1, "posting_date": str(row.label)})
                     for row in daily_sales
                 ],
+            },
+            {
+                "title": _("Sales Person Performance Summary"),
+                "columns": [
+                    _("Sales Person"),
+                    _("Revenue"),
+                    _("Collected Amount"),
+                    _("Overdue Amount"),
+                    _("Sales Orders"),
+                    _("Quotations"),
+                    _("Invoices"),
+                ],
+                "rows": [
+                    [
+                        row["sales_person"],
+                        row["revenue"],
+                        row["collected_amount"],
+                        row["overdue_amount"],
+                        row["sales_orders"],
+                        row["quotations"],
+                        row["invoices"],
+                    ]
+                    for row in sorted(
+                        sales_person_summary.values(),
+                        key=lambda item: item["revenue"],
+                        reverse=True,
+                    )
+                ],
+                "fieldtypes": ["Data", "Currency", "Currency", "Currency", "Int", "Int", "Int"],
+            },
+            {
+                "title": _("New Customers"),
+                "columns": [_("Customer"), _("Contact Number"), _("Created On")],
+                "rows": [[row.customer_name or row.name, row.contact_number, row.created_on] for row in new_customers],
+                "fieldtypes": ["Data", "Data", "Date"],
+                "row_routes": [_list_route("Customer", {"name": row.name}) for row in new_customers],
             },
             {
                 "title": _("Sales Person Performance"),

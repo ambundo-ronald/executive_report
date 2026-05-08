@@ -40,6 +40,14 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
 
     const $root = $(`
         <div class="executive-report-page">
+            <div class="executive-report-hero">
+                <div>
+                    <div class="executive-report-eyebrow">${__("Executive Command View")}</div>
+                    <div class="executive-report-hero-title">${__("Daily performance dashboard")}</div>
+                    <div class="executive-report-hero-period"></div>
+                </div>
+                <div class="executive-report-hero-metrics"></div>
+            </div>
             <div class="executive-report-tabs"></div>
             <div class="executive-report-kpis"></div>
             <div class="executive-report-grid">
@@ -108,12 +116,22 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
 
     function render_kpis(section) {
         const $kpis = $root.find(".executive-report-kpis").empty();
-        if (!section.kpis.length) {
+        const hiddenOverviewKpis = new Set([
+            __("Net Sales"),
+            __("Net Profit"),
+            __("Cash and Bank Balance"),
+            __("Overdue Receivables"),
+        ]);
+        const kpis = state.activeTab === "overview"
+            ? (section.kpis || []).filter((kpi) => !hiddenOverviewKpis.has(kpi.label))
+            : (section.kpis || []);
+
+        if (!kpis.length) {
             $kpis.html(`<div class="executive-report-muted">${__("No KPI data available.")}</div>`);
             return;
         }
 
-        section.kpis.forEach((kpi) => {
+        kpis.forEach((kpi) => {
             const $kpi = $(`
                 <div class="executive-report-kpi">
                     <div class="label"></div>
@@ -134,6 +152,34 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
             }
 
             $kpi.appendTo($kpis);
+        });
+    }
+
+    function render_hero() {
+        const overview = state.data.tabs.overview || {};
+        const heroItems = [
+            [__("Sales"), find_kpi(overview, __("Net Sales")), "good"],
+            [__("Profit"), find_kpi(overview, __("Net Profit")), "good"],
+            [__("Cash"), find_kpi(overview, __("Cash and Bank Balance")), "neutral"],
+            [__("Receivables Risk"), find_kpi(overview, __("Overdue Receivables")), "risk"],
+        ];
+
+        $root.find(".executive-report-hero-period").text(
+            `${frappe.datetime.str_to_user(state.data.from_date)} - ${frappe.datetime.str_to_user(state.data.to_date)}`
+        );
+
+        const $metrics = $root.find(".executive-report-hero-metrics").empty();
+        heroItems.forEach(([label, kpi, tone]) => {
+            const value = kpi ? format_value(kpi.value, kpi.fieldtype) : format_value(0, "Currency");
+            $(`
+                <div class="executive-report-hero-metric ${tone}">
+                    <div class="executive-report-mini-label"></div>
+                    <div class="executive-report-hero-value"></div>
+                </div>
+            `)
+                .find(".executive-report-mini-label").text(label).end()
+                .find(".executive-report-hero-value").text(value).end()
+                .appendTo($metrics);
         });
     }
 
@@ -454,6 +500,7 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
     function render() {
         if (!state.data) return;
 
+        render_hero();
         render_tabs();
         const section = state.data.tabs[state.activeTab];
         render_kpis(section);
@@ -464,7 +511,14 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
         }
         (section.charts || []).forEach((chart) => render_chart(chart).appendTo($main));
         (section.heatmaps || []).forEach((heatmap) => render_heatmap(heatmap).appendTo($main));
-        section.tables.forEach((table) => render_table(table).appendTo($main));
+        const hiddenOverviewTables = new Set([
+            __("Daily Sales Performance"),
+            __("Sales Person Performance"),
+        ]);
+        const tables = state.activeTab === "overview"
+            ? section.tables.filter((table) => !hiddenOverviewTables.has(table.title))
+            : section.tables;
+        tables.forEach((table) => render_table(table).appendTo($main));
         render_notes(section);
     }
 
