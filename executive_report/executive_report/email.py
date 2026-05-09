@@ -45,6 +45,12 @@ def _dashboard_url(from_date: str, to_date: str) -> str:
     return frappe.utils.get_url(f"/app/executive-dashboard?from_date={from_date}&to_date={to_date}")
 
 
+def _period_label(from_date: str, to_date: str) -> str:
+    if from_date == to_date:
+        return from_date
+    return f"{from_date} to {to_date}"
+
+
 def _find_kpi(section: dict, label: str) -> dict | None:
     return next((kpi for kpi in section.get("kpis", []) if kpi.get("label") == label), None)
 
@@ -303,7 +309,7 @@ def _render_executive_overview_html(dashboard: dict, dashboard_url: str) -> str:
                                 <td style="padding:22px 22px 16px;background:#102a43;border-radius:8px 8px 0 0;">
                                     <div style="font-size:11px;line-height:14px;color:#9fb3c8;font-weight:800;text-transform:uppercase;">{eyebrow}</div>
                                     <div style="font-size:24px;line-height:30px;color:#ffffff;font-weight:800;margin-top:5px;">{title}</div>
-                                    <div style="font-size:13px;line-height:18px;color:#d9e2ec;margin-top:6px;">{period_label}: <strong>{from_date}</strong></div>
+                                    <div style="font-size:13px;line-height:18px;color:#d9e2ec;margin-top:6px;">{period_label}: <strong>{period}</strong></div>
                                 </td>
                             </tr>
                             <tr><td style="padding:14px 16px 4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{metric_html}</tr></table></td></tr>
@@ -326,7 +332,7 @@ def _render_executive_overview_html(dashboard: dict, dashboard_url: str) -> str:
         eyebrow=_("Executive Report"),
         title=_("Daily Executive Dashboard"),
         period_label=_("Report Date"),
-        from_date=escape(str(dashboard.get("from_date") or "")),
+        period=escape(_period_label(str(dashboard.get("from_date") or ""), str(dashboard.get("to_date") or ""))),
         metric_html=metric_html,
         secondary_metric_html=secondary_metric_html,
         signal_html=signal_html,
@@ -338,7 +344,12 @@ def _render_executive_overview_html(dashboard: dict, dashboard_url: str) -> str:
     )
 
 
-def _send_summary(ignore_schedule: bool = False, mark_sent: bool = True) -> None:
+def _send_summary(
+    ignore_schedule: bool = False,
+    mark_sent: bool = True,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> None:
     if not frappe.db.exists("DocType", "Executive Report Settings"):
         return
 
@@ -352,13 +363,21 @@ def _send_summary(ignore_schedule: bool = False, mark_sent: bool = True) -> None
     if not recipients:
         return
 
-    from_date, to_date = _today_range()
+    if from_date or to_date:
+        to_date = str(getdate(to_date or from_date))
+        from_date = str(getdate(from_date or to_date))
+        if getdate(from_date) > getdate(to_date):
+            frappe.throw(_("From Date cannot be after To Date."))
+    else:
+        from_date, to_date = _today_range()
+
     dashboard = get_dashboard_for_email(from_date=from_date, to_date=to_date)
     message = _render_executive_overview_html(dashboard, _dashboard_url(from_date, to_date))
+    period = _period_label(from_date, to_date)
 
     frappe.sendmail(
         recipients=recipients,
-        subject=f"{settings.email_subject or _('Daily Executive Performance Summary')} - {to_date}",
+        subject=f"{settings.email_subject or _('Daily Executive Performance Summary')} - {period}",
         message=message,
         reference_doctype="Executive Report Settings",
         reference_name="Executive Report Settings",
@@ -373,6 +392,6 @@ def send_daily_summary() -> None:
 
 
 @frappe.whitelist()
-def send_summary_now() -> None:
+def send_summary_now(from_date: str | None = None, to_date: str | None = None) -> None:
     require_executive_report_manager()
-    _send_summary(ignore_schedule=True, mark_sent=False)
+    _send_summary(ignore_schedule=True, mark_sent=False, from_date=from_date, to_date=to_date)
