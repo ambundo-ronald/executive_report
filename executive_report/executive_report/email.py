@@ -262,7 +262,7 @@ def _render_executive_overview_html(dashboard: dict, dashboard_url: str) -> str:
     metric_html = "".join(
         [
             _render_metric_tile(_("Net Sales"), _find_kpi(overview, _("Net Sales")), currency),
-            _render_metric_tile(_("Net Profit"), _find_kpi(overview, _("Net Profit")), currency),
+            _render_metric_tile(_("Gross Profit"), _find_kpi(overview, _("Gross Profit")), currency),
             _render_metric_tile(_("Cash Balance"), _find_kpi(overview, _("Cash and Bank Balance")), currency),
             _render_metric_tile(_("Overdue Receivables"), _find_kpi(overview, _("Overdue Receivables")), currency, risk_metric=True),
         ]

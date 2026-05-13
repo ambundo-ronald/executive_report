@@ -25,10 +25,14 @@ def _has_column(doctype: str, fieldname: str) -> bool:
     return _doctype_exists(doctype) and bool(frappe.db.has_column(doctype, fieldname))
 
 
-def _get_company_currency() -> str | None:
-    company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+def _get_default_company() -> str | None:
+    return frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
         "Global Defaults", "default_company"
     )
+
+
+def _get_company_currency() -> str | None:
+    company = _get_default_company()
     if not company or not _doctype_exists("Company"):
         return None
     return frappe.db.get_value("Company", company, "default_currency")
@@ -51,6 +55,14 @@ def _list_route(doctype: str, filters: dict | None = None) -> dict:
 
 def _report_route(report_name: str, filters: dict | None = None) -> dict:
     return {"type": "Report", "report_name": report_name, "filters": filters or {}}
+
+
+def _report_period_filter(from_date: str, to_date: str) -> dict:
+    filters = {"from_date": from_date, "to_date": to_date}
+    company = _get_default_company()
+    if company:
+        filters["company"] = company
+    return filters
 
 
 def _period_filter(fieldname: str, from_date: str, to_date: str) -> dict:
@@ -376,6 +388,88 @@ def _change_percent(current: float, previous: float) -> float:
     if not previous:
         return 100 if current else 0
     return (current - previous) / previous * 100
+
+
+def _first_number(row: dict, fieldnames: Iterable[str]) -> float:
+    for fieldname in fieldnames:
+        if fieldname in row and row.get(fieldname) is not None:
+            return flt(row.get(fieldname))
+    return 0
+
+
+def _is_total_report_row(row: dict) -> bool:
+    values = [str(value).strip().lower() for value in row.values() if value is not None]
+    return any(value in {"total", "grand total"} for value in values)
+
+
+def _query_report_rows(report_name: str, filters: dict) -> list[dict]:
+    if not frappe.db.exists("Report", report_name):
+        return []
+
+    try:
+        from frappe.desk.query_report import run
+
+        result = run(report_name, filters)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), _("Executive Report: {0} failed").format(report_name))
+        return []
+
+    if not isinstance(result, dict):
+        return []
+
+    rows = result.get("result") or result.get("data") or []
+    columns = result.get("columns") or []
+    fieldnames = []
+    for column in columns:
+        if isinstance(column, dict):
+            fieldnames.append(column.get("fieldname") or frappe.scrub(column.get("label") or ""))
+        else:
+            fieldnames.append(frappe.scrub(str(column).split(":")[0]))
+
+    normalized_rows = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized_rows.append(row)
+        elif isinstance(row, (list, tuple)):
+            normalized_rows.append({fieldname: row[index] for index, fieldname in enumerate(fieldnames) if index < len(row)})
+    return normalized_rows
+
+
+def _gross_profit_metrics(from_date: str, to_date: str) -> dict:
+    rows = _query_report_rows("Gross Profit", _report_period_filter(from_date, to_date))
+    gross_profit = 0
+    sales_amount = 0
+
+    for row in rows:
+        if _is_total_report_row(row):
+            continue
+
+        row_sales = _first_number(
+            row,
+            (
+                "base_amount",
+                "amount",
+                "sales_amount",
+                "selling_amount",
+                "net_amount",
+                "base_net_amount",
+            ),
+        )
+        row_gross_profit = _first_number(row, ("gross_profit", "gross_profit_amount"))
+        if not row_gross_profit and row_sales:
+            buying_amount = _first_number(row, ("buying_amount", "cost_amount", "valuation_amount"))
+            if buying_amount:
+                row_gross_profit = row_sales - buying_amount
+
+        sales_amount += row_sales
+        gross_profit += row_gross_profit
+
+    return {
+        "sales_amount": sales_amount,
+        "gross_profit": gross_profit,
+        "gross_margin": (gross_profit / sales_amount * 100) if sales_amount else 0,
+        "has_rows": bool(rows),
+    }
 
 
 def _cash_balance(to_date: str) -> float:
@@ -1005,8 +1099,6 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
 
     income = 0
     expense = 0
-    previous_income = 0
-    previous_expense = 0
     if _doctype_exists("GL Entry") and _doctype_exists("Account"):
         income = _sum(
             """
@@ -1019,17 +1111,6 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
             """,
             values,
         )
-        previous_income = _sum(
-            """
-            select sum(gle.credit - gle.debit) as value
-            from `tabGL Entry` gle
-            inner join `tabAccount` account on account.name = gle.account
-            where gle.docstatus = 1
-              and account.root_type = 'Income'
-              and gle.posting_date between %(from_date)s and %(to_date)s
-            """,
-            previous_values,
-        )
         expense = _sum(
             """
             select sum(gle.debit - gle.credit) as value
@@ -1041,23 +1122,16 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
             """,
             values,
         )
-        previous_expense = _sum(
-            """
-            select sum(gle.debit - gle.credit) as value
-            from `tabGL Entry` gle
-            inner join `tabAccount` account on account.name = gle.account
-            where gle.docstatus = 1
-              and account.root_type = 'Expense'
-              and gle.posting_date between %(from_date)s and %(to_date)s
-            """,
-            previous_values,
-        )
     else:
         notes.append(_("GL Entry or Account is not available."))
 
-    net_profit = income - expense
-    previous_profit = previous_income - previous_expense
-    margin = (net_profit / income * 100) if income else 0
+    gross_profit_metrics = _gross_profit_metrics(from_date, to_date)
+    previous_gross_profit_metrics = _gross_profit_metrics(previous_from, previous_to)
+    gross_profit = gross_profit_metrics["gross_profit"]
+    previous_gross_profit = previous_gross_profit_metrics["gross_profit"]
+    gross_margin = gross_profit_metrics["gross_margin"]
+    if not gross_profit_metrics["has_rows"]:
+        notes.append(_("Gross Profit report did not return data for this period."))
     cash_balance = _cash_balance(to_date)
 
     payable_due_soon = 0
@@ -1117,18 +1191,18 @@ def _executive_overview(from_date: str, to_date: str) -> dict:
 
     return {
         "kpis": [
-            _number_card(_("Net Sales"), sales, "Currency", _list_route("Sales Invoice", {"docstatus": 1, **_period_filter("posting_date", from_date, to_date)})),
+            _number_card(_("Net Sales"), sales, "Currency", _report_route("Sales Register", _report_period_filter(from_date, to_date))),
             _number_card(_("Sales Change"), _change_percent(sales, previous_sales), "Percent"),
-            _number_card(_("Sales Invoices"), invoices, "Int", _list_route("Sales Invoice", {"docstatus": 1, **_period_filter("posting_date", from_date, to_date)})),
+            _number_card(_("Sales Invoices"), invoices, "Int", _report_route("Sales Register", _report_period_filter(from_date, to_date))),
             _number_card(_("New Customers"), len(new_customers), "Int", _list_route("Customer", _period_filter("creation", from_date, to_date))),
             _number_card(_("Expense"), expense, "Currency", _report_route("General Ledger", {"from_date": from_date, "to_date": to_date})),
             _number_card(_("Outstanding Sales"), outstanding, "Currency", _report_route("Accounts Receivable", {"report_date": to_date})),
             _number_card(_("Overdue Receivables"), overdue_receivables, "Currency", _report_route("Accounts Receivable", {"report_date": to_date, "range3": 90})),
             _number_card(_("Cash and Bank Balance"), cash_balance, "Currency", _report_route("General Ledger", {"to_date": to_date})),
             _number_card(_("Payables Due Soon"), payable_due_soon, "Currency", _report_route("Accounts Payable", {"report_date": to_date})),
-            _number_card(_("Net Profit"), net_profit, "Currency", _report_route("Profit and Loss Statement", {"from_date": from_date, "to_date": to_date})),
-            _number_card(_("Profit Change"), _change_percent(net_profit, previous_profit), "Percent"),
-            _number_card(_("Net Margin"), margin, "Percent", _report_route("Profit and Loss Statement", {"from_date": from_date, "to_date": to_date})),
+            _number_card(_("Gross Profit"), gross_profit, "Currency", _report_route("Gross Profit", _report_period_filter(from_date, to_date))),
+            _number_card(_("Gross Profit Change"), _change_percent(gross_profit, previous_gross_profit), "Percent"),
+            _number_card(_("Gross Margin"), gross_margin, "Percent", _report_route("Gross Profit", _report_period_filter(from_date, to_date))),
         ],
         "charts": [
             {
@@ -1332,62 +1406,67 @@ def _expense(from_date: str, to_date: str) -> dict:
 
 
 def _profit_and_loss(from_date: str, to_date: str) -> dict:
-    if not (_doctype_exists("GL Entry") and _doctype_exists("Account")):
-        return {"kpis": [], "tables": [], "notes": [_("GL Entry or Account is not available.")]}
-
     values = {"from_date": from_date, "to_date": to_date}
-    income = _sum(
-        """
-        select sum(gle.credit - gle.debit) as value
-        from `tabGL Entry` gle
-        inner join `tabAccount` account on account.name = gle.account
-        where gle.docstatus = 1
-          and account.root_type = 'Income'
-          and gle.posting_date between %(from_date)s and %(to_date)s
-        """,
-        values,
-    )
-    expense = _sum(
-        """
-        select sum(gle.debit - gle.credit) as value
-        from `tabGL Entry` gle
-        inner join `tabAccount` account on account.name = gle.account
-        where gle.docstatus = 1
-          and account.root_type = 'Expense'
-          and gle.posting_date between %(from_date)s and %(to_date)s
-        """,
-        values,
-    )
-    net_profit = income - expense
-    margin = (net_profit / income * 100) if income else 0
+    notes = []
+    income = 0
+    expense = 0
+    account_summary = []
+    if _doctype_exists("GL Entry") and _doctype_exists("Account"):
+        income = _sum(
+            """
+            select sum(gle.credit - gle.debit) as value
+            from `tabGL Entry` gle
+            inner join `tabAccount` account on account.name = gle.account
+            where gle.docstatus = 1
+              and account.root_type = 'Income'
+              and gle.posting_date between %(from_date)s and %(to_date)s
+            """,
+            values,
+        )
+        expense = _sum(
+            """
+            select sum(gle.debit - gle.credit) as value
+            from `tabGL Entry` gle
+            inner join `tabAccount` account on account.name = gle.account
+            where gle.docstatus = 1
+              and account.root_type = 'Expense'
+              and gle.posting_date between %(from_date)s and %(to_date)s
+            """,
+            values,
+        )
+        account_summary = _rows(
+            """
+            select account.root_type, gle.account as label,
+                   sum(case
+                       when account.root_type = 'Income' then gle.credit - gle.debit
+                       when account.root_type = 'Expense' then gle.debit - gle.credit
+                       else 0
+                   end) as amount
+            from `tabGL Entry` gle
+            inner join `tabAccount` account on account.name = gle.account
+            where gle.docstatus = 1
+              and account.root_type in ('Income', 'Expense')
+              and gle.posting_date between %(from_date)s and %(to_date)s
+            group by account.root_type, gle.account
+            having amount != 0
+            order by account.root_type, amount desc
+            limit 20
+            """,
+            values,
+        )
+    else:
+        notes.append(_("GL Entry or Account is not available."))
 
-    account_summary = _rows(
-        """
-        select account.root_type, gle.account as label,
-               sum(case
-                   when account.root_type = 'Income' then gle.credit - gle.debit
-                   when account.root_type = 'Expense' then gle.debit - gle.credit
-                   else 0
-               end) as amount
-        from `tabGL Entry` gle
-        inner join `tabAccount` account on account.name = gle.account
-        where gle.docstatus = 1
-          and account.root_type in ('Income', 'Expense')
-          and gle.posting_date between %(from_date)s and %(to_date)s
-        group by account.root_type, gle.account
-        having amount != 0
-        order by account.root_type, amount desc
-        limit 20
-        """,
-        values,
-    )
+    gross_profit_metrics = _gross_profit_metrics(from_date, to_date)
+    if not gross_profit_metrics["has_rows"]:
+        notes.append(_("Gross Profit report did not return data for this period."))
 
     return {
         "kpis": [
             _number_card(_("Income"), income, "Currency", _report_route("Profit and Loss Statement", {"from_date": from_date, "to_date": to_date})),
             _number_card(_("Expense"), expense, "Currency", _report_route("Profit and Loss Statement", {"from_date": from_date, "to_date": to_date})),
-            _number_card(_("Net Profit"), net_profit, "Currency", _report_route("Profit and Loss Statement", {"from_date": from_date, "to_date": to_date})),
-            _number_card(_("Net Margin"), margin, "Percent", _report_route("Profit and Loss Statement", {"from_date": from_date, "to_date": to_date})),
+            _number_card(_("Gross Profit"), gross_profit_metrics["gross_profit"], "Currency", _report_route("Gross Profit", _report_period_filter(from_date, to_date))),
+            _number_card(_("Gross Margin"), gross_profit_metrics["gross_margin"], "Percent", _report_route("Gross Profit", _report_period_filter(from_date, to_date))),
         ],
         "tables": [
             {
@@ -1401,6 +1480,7 @@ def _profit_and_loss(from_date: str, to_date: str) -> dict:
                 ],
             }
         ],
+        "notes": notes,
     }
 
 
@@ -1573,7 +1653,7 @@ def iter_kpis(dashboard: dict) -> Iterable[tuple[str, dict]]:
         "overview": _("Executive Overview"),
         "sales": _("Sales"),
         "expense": _("Expense"),
-        "profit_loss": _("Profit and Loss"),
+        "profit_loss": _("Gross Profit"),
         "system_usage": _("System Usage"),
         "projection": _("Projection and Simulation"),
     }

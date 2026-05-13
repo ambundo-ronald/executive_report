@@ -61,7 +61,7 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
         ["overview", __("Executive Overview")],
         ["sales", __("Sales")],
         ["expense", __("Expense")],
-        ["profit_loss", __("Profit and Loss")],
+        ["profit_loss", __("Gross Profit")],
         ["system_usage", __("System Usage")],
         ["projection", __("Projection and Simulation")],
     ];
@@ -118,7 +118,7 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
         const $kpis = $root.find(".executive-report-kpis").empty();
         const hiddenOverviewKpis = new Set([
             __("Net Sales"),
-            __("Net Profit"),
+            __("Gross Profit"),
             __("Cash and Bank Balance"),
             __("Overdue Receivables"),
         ]);
@@ -159,7 +159,7 @@ frappe.pages["executive-dashboard"].on_page_load = function (wrapper) {
         const overview = state.data.tabs.overview || {};
         const heroItems = [
             [__("Sales"), find_kpi(overview, __("Net Sales")), "good"],
-            [__("Profit"), find_kpi(overview, __("Net Profit")), "good"],
+            [__("Profit"), find_kpi(overview, __("Gross Profit")), "good"],
             [__("Cash"), find_kpi(overview, __("Cash and Bank Balance")), "neutral"],
             [__("Receivables Risk"), find_kpi(overview, __("Overdue Receivables")), "risk"],
         ];
